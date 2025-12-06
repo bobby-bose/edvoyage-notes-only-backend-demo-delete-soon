@@ -132,6 +132,8 @@ class FlashcardSerializer(serializers.ModelSerializer):
     # Nested serializer for images remains the same
     images = FlashcardImageSerializer(many=True, read_only=True)
     category = CategorySerializer(read_only=True)
+    sub_subject_name = serializers.StringRelatedField(
+        source='sub_subject',read_only=True)
     
     # Provides the string representation of the subject (e.g., "Anatomy") for reading.
     subject_name = serializers.StringRelatedField(source='subject', read_only=True)
@@ -144,6 +146,7 @@ class FlashcardSerializer(serializers.ModelSerializer):
             'subject', # Used for writing (expects a subject ID)
             'subject_name', # Used for reading
             'sub_subject',
+            'sub_subject_name',
             'category',
             'description',
             'created_at',

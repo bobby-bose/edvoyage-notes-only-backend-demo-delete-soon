@@ -24,6 +24,7 @@ from notes import views
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/notes/', include('notes.urls')),
-    path('media/<path:path>/', views.media_serve),
+ 
 ]
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
