@@ -26,7 +26,7 @@ SECRET_KEY = 'django-insecure-a)1@sz@(5sd5own4hqf-lvl*d7o9_uj%88dcrmf$u0wvgc%#(9
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'edvoyagenotes.pythonanywhere.com']
+ALLOWED_HOSTS = ['api.edvoyage.work.gd','localhost', '127.0.0.1', 'edvoyagenotes.pythonanywhere.com']
 
 
 # Application definition
