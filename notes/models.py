@@ -217,25 +217,75 @@ class Flashcard(models.Model):
 
     def _process_pdf_with_bobi(self):
         """
-        Delegate PDF processing to the external BOBI Flask service.
-        The Flask service is expected to return JSON with Base64-encoded images.
-        This method calls the helper in `notes.utils` which performs the HTTP
-        request and saves `FlashcardImage` records atomically.
+        Process PDF locally using Django's pdf_processing module.
+        Converts PDF pages to images, applies watermark, and creates FlashcardImage records.
+        Processing is synchronous so the modal shows real-time progress in admin.
         """
-        from .utils import process_flashcard_pdf_with_bobi
+        from .pdf_processing import process_pdf_to_images, save_image_from_pil
+        from django.core.files.base import ContentFile
+        from django.db import transaction
+        from uuid import uuid4
         import logging
 
         logger = logging.getLogger(__name__)
 
         try:
-            process_flashcard_pdf_with_bobi(self)
-            logger.info(f"✓ Successfully processed flashcard {self.id} via BOBI")
+            if not self.pdf_file:
+                raise ValueError("Flashcard has no PDF file")
+
+            pdf_path = self.pdf_file.path
+            logger.info(f"[Flashcard {self.id}] Starting PDF processing: {pdf_path}")
+
+            # Process PDF and get list of (pil_image, page_num) tuples
+            images_data = process_pdf_to_images(pdf_path)
+            logger.info(f"[Flashcard {self.id}] PDF conversion complete: {len(images_data)} pages")
+
+            # Create FlashcardImage records atomically
+            with transaction.atomic():
+                for pil_image, page_num in images_data:
+                    try:
+                        # Get image format from settings
+                        from django.conf import settings
+                        img_format = getattr(settings, 'BOBI_FORMAT', 'png').lower()
+                        ext = 'png' if img_format == 'png' else 'jpg'
+
+                        # Convert PIL image to bytes
+                        image_bytes = save_image_from_pil(pil_image, img_format)
+
+                        # Create Django File object
+                        filename = f"{uuid4()}.{ext}"
+                        image_file = ContentFile(image_bytes, name=filename)
+
+                        # Create FlashcardImage record
+                        FlashcardImage.objects.create(
+                            flashcard=self,
+                            image=image_file,
+                            caption=f"Page {page_num}"
+                        )
+
+                        logger.info(f"[Flashcard {self.id}] Created image for page {page_num}")
+
+                    except Exception as e:
+                        logger.exception(f"[Flashcard {self.id}] Failed to create image for page {page_num}: {e}")
+                        raise
+
+            logger.info(f"✓ [Flashcard {self.id}] Successfully processed and saved {len(images_data)} images")
+
+        except FileNotFoundError as e:
+            logger.error(f"✗ [Flashcard {self.id}] PDF file not found: {str(e)}")
+            from django.core.exceptions import ValidationError
+            raise ValidationError(f"PDF file not found: {str(e)}")
+
+        except ValueError as e:
+            logger.error(f"✗ [Flashcard {self.id}] Invalid PDF: {str(e)}")
+            from django.core.exceptions import ValidationError
+            raise ValidationError(f"Invalid PDF: {str(e)}")
 
         except Exception as e:
-            logger.error(f"✗ Failed to process PDF for flashcard {self.id}: {str(e)}")
+            logger.exception(f"✗ [Flashcard {self.id}] PDF processing failed: {str(e)}")
             from django.core.exceptions import ValidationError
             raise ValidationError(
-                f"PDF processing failed: {str(e)}. Please check that BOBI service is running."
+                f"PDF processing failed: {str(e)}. Please ensure the PDF is valid."
             )
 
 

@@ -141,14 +141,23 @@ REST_FRAMEWORK = {
 # Media files
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
-# ============================================================
-# BOBI Flask Service Configuration
-# ============================================================
-# Configure the external BOBI PDF processing Flask service
-# Can be overridden via environment variables for different deployments
 
-BOBI_SERVICE_URL = 'http://localhost:5000'
-BOBI_REQUEST_TIMEOUT = 800
-BOBI_DPI = 200
-BOBI_FORMAT = 'png'
-BOBI_API_KEY = None
+# ============================================================
+# PDF Processing Settings (Local, No Flask Service)
+# ============================================================
+# All PDF processing happens within Django using PyMUPDF and Pillow
+# No external Flask service required
+
+# Image conversion settings
+BOBI_DPI = 200                          # PDF to image resolution (dots per inch)
+BOBI_FORMAT = 'png'                     # Output format: 'png' (lossless) or 'jpeg' (lossy)
+
+# Watermark settings
+WATERMARK_SVG_PATH = BASE_DIR / 'logo.svg'  # Path to watermark SVG file
+WATERMARK_OPACITY = 0.5                 # Watermark transparency (0.0 = transparent, 1.0 = opaque)
+WATERMARK_ANGLE = 0                     # Rotation angle in degrees
+WATERMARK_SCALE = 0.25                  # Size as fraction of image dimension
+WATERMARK_SPACING = (320, 380)          # (horizontal_step, vertical_step) grid spacing in pixels
+
+# Processing configuration
+PDF_PROCESSING_TIMEOUT = None           # No timeout - keep processing until complete
