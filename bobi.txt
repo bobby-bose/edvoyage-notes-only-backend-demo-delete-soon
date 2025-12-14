@@ -1,0 +1,922 @@
+================================================================================
+                   BOBI: MEDICAL PDF WATERMARKING APPLICATION
+                    Comprehensive Technical Documentation
+================================================================================
+
+PROJECT OVERVIEW
+----------------
+BOBI is a Flask-based web application designed for secure processing of medical 
+PDF documents. It provides a complete workflow for uploading PDFs, applying 
+SVG-based watermarks, converting to images, tracking progress, and displaying 
+results to end users.
+
+Target Users: Clinics, labs, hospitals, and medical institutions requiring 
+document watermarking and conversion.
+
+Stack: Python 3.x | Flask | PyMUPDF | PyPDF2 | ReportLab | CairoSVG
+
+
+================================================================================
+                          ARCHITECTURE OVERVIEW
+================================================================================
+
+The application follows a 3-layer architecture:
+
+1. PRESENTATION LAYER (Frontend)
+   └─ HTML Templates: upload.html, progress.html, result.html
+   └─ Client-side logic: form validation, progress polling
+
+2. APPLICATION LAYER (Backend - Flask)
+   └─ Route handlers for upload, progress tracking, results
+   └─ Job management via UUID-based job_id
+   └─ In-memory progress storage
+
+3. PROCESSING LAYER (Core Logic)
+   └─ watermark.py: SVG watermark creation and application
+   └─ PyMUPDF integration: PDF-to-image conversion
+   └─ File system storage: uploads/ and static/output/
+
+
+================================================================================
+                         DATAFLOW DIAGRAM
+================================================================================
+
+User Browser                Flask App                File System
+     │                          │                          │
+     ├──────── POST /upload ────→│                          │
+     │      (PDF + Logo)         │                          │
+     │                           ├──────→ uploads/          │
+     │                           │   (save original PDF)    │
+     │                           │                          │
+     │                           ├─→ Watermark Module       │
+     │                           │   (apply_watermark)      │
+     │                           │                          │
+     │                           ├──────→ uploads/          │
+     │                           │   (save watermarked PDF) │
+     │                           │                          │
+     │                           ├─→ PDF → Images          │
+     │                           │   (convert_pdf_to_images)│
+     │                           │                          │
+     │                           ├──────→ static/output/    │
+     │                           │   (save PNG pages)       │
+     │                           │                          │
+     │  ← 302 /progress/{id} ────┤                          │
+     │                           │                          │
+     ├──→ GET /progress/{id} ────→│                          │
+     │  ← progress.html           │                          │
+     │                           │                          │
+     ├──→ GET /status/{id} ──────→│                          │
+     │  ← {progress: XX%}         │                          │
+     │                           │                          │
+     │ [Poll every 1 second]      │                          │
+     │                           │                          │
+     │  (When progress = 100%)    │                          │
+     │                           │                          │
+     ├──→ GET /result/{id} ──────→│                          │
+     │  ← result.html             │                          │
+     │                           │                          │
+     └─────── View Images ───────→                          │
+
+
+================================================================================
+                        DIRECTORY STRUCTURE
+================================================================================
+
+bobi/
+├── app.py                   [Main Flask application]
+├── watermark.py             [Watermarking core logic]
+├── requirements.txt         [Python dependencies]
+├── uploads/                 [Temporary storage for PDFs]
+│   ├── {job_id}_original.pdf         [User uploaded PDF]
+│   └── {job_id}_watermarked.pdf      [PDF after watermark]
+├── static/
+│   └── output/              [Final output folder]
+│       ├── {job_id}/        [Per-job output folder]
+│       │   ├── page_1.png   [Converted page 1]
+│       │   ├── page_2.png   [Converted page 2]
+│       │   └── ...
+│       └── {other_job_ids}/
+├── templates/               [HTML templates]
+│   ├── upload.html          [Upload form page]
+│   ├── progress.html        [Progress tracking page]
+│   └── result.html          [Results display page]
+└── logo.svg                 [Watermark logo (assumed to exist)]
+
+
+================================================================================
+                         FILE-BY-FILE ANALYSIS
+================================================================================
+
+--- FILE: app.py ---
+
+PURPOSE:
+Main Flask application entry point. Handles HTTP routing, file uploads, job 
+management, and serves templates.
+
+KEY COMPONENTS:
+
+1. IMPORTS & SETUP
+   ├─ Flask: Web framework
+   ├─ fitz (PyMUPDF): Fast PDF manipulation and rendering
+   ├─ uuid: Generate unique job identifiers
+   └─ watermark module: Custom watermarking logic
+
+2. DIRECTORY CONFIGURATION
+   ├─ BASE_DIR: Script directory
+   ├─ UPLOAD_DIR: Path to store original/watermarked PDFs
+   ├─ OUTPUT_DIR: Path to store converted images
+   └─ LOGO_SVG: Path to watermark SVG file
+
+3. IN-MEMORY JOB TRACKING
+   ├─ progress_store: Dictionary {job_id: progress_percentage}
+   ├─ Purpose: Track job progress for real-time UI updates
+   └─ Scope: Session-only (lost on app restart)
+
+ROUTES:
+
+┌─ POST @ / (Upload Route)
+│  Input: multipart/form-data
+│  │ ├─ pdf: PDF file from user
+│  │ └─ (Expected logo file - currently not used in logic)
+│  Process:
+│  │ 1. Generate unique job_id (UUID4)
+│  │ 2. Create output directory for this job
+│  │ 3. Save original PDF to uploads/{job_id}_original.pdf
+│  │ 4. Set progress to 5%
+│  │ 5. Call apply_watermark() from watermark.py
+│  │ 6. Set progress to 30%
+│  │ 7. Call convert_pdf_to_images() to generate PNGs
+│  │ 8. Redirect to progress page
+│  Output: HTTP 302 redirect to /progress/{job_id}
+
+├─ GET @ / (Upload Form Display)
+│  Returns: upload.html template
+│  Purpose: Display form for PDF upload
+
+├─ GET @ /progress/<job_id> (Progress Page)
+│  Returns: progress.html template
+│  Purpose: Display progress bar with live updates
+│  Note: progress.html polls /status/ endpoint every 1 second
+
+├─ GET @ /status/<job_id> (Progress Data API)
+│  Returns: JSON {progress: int (0-100)}
+│  Source: progress_store[job_id]
+│  Used by: JavaScript in progress.html for real-time updates
+
+└─ GET @ /result/<job_id> (Results Page)
+   Input: job_id from URL
+   Process:
+   │ 1. List all .png files from static/output/{job_id}/
+   │ 2. Sort alphabetically (ensures page_1, page_2, ... order)
+   │ 3. Pass to result.html template
+   Output: result.html with embedded image tags
+
+FUNCTION: convert_pdf_to_images()
+
+Purpose:
+Rasterize watermarked PDF to individual PNG images at 200 DPI using PyMUPDF.
+
+Algorithm:
+│ 1. Open PDF using fitz.open(pdf_path)
+│ 2. Get total page count
+│ 3. FOR EACH page:
+│    ├─ Get pixmap (raster image) at 200 DPI
+│    ├─ Save as PNG to output_dir/page_{N}.png
+│    └─ Update progress_store[job_id]
+│        └─ Formula: 30 + ((current_page / total) * 70)
+│           Meaning: 30% for watermarking + page conversion
+│                    + 70% for all pages combined
+
+Characteristics:
+├─ Blocking operation: Holds request thread until complete
+├─ DPI: 200 (reasonable for screen viewing, balanced size/quality)
+├─ Output format: PNG
+└─ Progress scaling: 30→100% distributed across page iterations
+
+
+--- FILE: watermark.py ---
+
+PURPOSE:
+Isolate watermarking logic. Handles SVG-to-image conversion and PDF page overlay.
+
+KEY FUNCTIONS:
+
+┌─ Function: create_watermark_from_svg(svg_path, opacity=0.3, angle=30)
+│
+│  Input:
+│  ├─ svg_path: File path to SVG logo
+│  ├─ opacity: Alpha transparency (0.3 = 30% opacity = watermark effect)
+│  └─ angle: Rotation angle in degrees (30° diagonal)
+│
+│  Process:
+│  │ 1. Convert SVG to PNG bytes
+│  │    └─ cairosvg.svg2png(url=svg_path) → binary PNG data
+│  │
+│  │ 2. Create in-memory PDF canvas (letter size 612x792 pts)
+│  │    └─ ReportLab Canvas for drawing operations
+│  │
+│  │ 3. Draw watermark pattern
+│  │    FOR x in range(-400, 1200, 200):    [x offset: -400→1000, step 200]
+│  │      FOR y in range(-400, 1200, 400):  [y offset: -400→800, step 400]
+│  │        ├─ Rotate canvas 30°
+│  │        ├─ Set fill opacity to 0.3 (30% visible)
+│  │        ├─ Draw PNG image at (x, y) sized 200x200 pts
+│  │        └─ Restore rotation state
+│  │
+│  │    Result: Diagonal watermark pattern covering entire page
+│  │
+│  │ 4. Save canvas to in-memory BytesIO
+│  │    └─ c.save() writes PDF to packet
+│  │
+│  Output: BytesIO object containing single-page watermark PDF
+
+├─ Function: apply_watermark(pdf_path, svg_path, output_path)
+│
+│  Input:
+│  ├─ pdf_path: Path to original PDF
+│  ├─ svg_path: Path to SVG logo
+│  └─ output_path: Where to save watermarked PDF
+│
+│  Process:
+│  │ 1. Create watermark PDF from SVG
+│  │    └─ watermark_pdf = create_watermark_from_svg(svg_path)
+│  │
+│  │ 2. Load watermark page
+│  │    ├─ Read watermark PDF
+│  │    └─ Extract first (only) page
+│  │
+│  │ 3. Load original PDF
+│  │    └─ PdfReader(pdf_path)
+│  │
+│  │ 4. Apply watermark to each page
+│  │    FOR EACH page in original PDF:
+│  │      ├─ Create blank page (same size as original)
+│  │      ├─ Merge original page content onto blank
+│  │      ├─ Merge watermark overlay on top
+│  │      └─ Add combined page to output writer
+│  │
+│  │ 5. Write output PDF to disk
+│  │    └─ writer.write(f) to output_path
+│  │
+│  Output: New PDF file with watermarks on all pages
+
+WATERMARK PATTERN ANALYSIS:
+
+Grid Coverage:
+├─ X coordinates: -400, -200, 0, 200, 400, 600, 800, 1000, 1200 pts
+├─ Y coordinates: -400, 0, 400, 800, 1200 pts
+├─ Total tiles: ~9 × 5 = ~45 watermark logos per page
+├─ Spacing: 200 pts horizontally, 400 pts vertically
+└─ Overlap: Negative offsets (-400) ensure corners are covered
+
+Negative Offsets Purpose:
+├─ Create watermark pattern larger than visible page
+├─ After 30° rotation, corners extend outside original bounds
+└─ Ensures full page coverage even at extreme rotations
+
+Opacity & Angle:
+├─ opacity=0.3: Watermark is subtle (30% visible, allows text reading)
+├─ angle=30°: Diagonal watermark at 30° makes it aesthetically pleasing
+└─ Effect: "OFFICIAL USE ONLY" style watermark (typical medical docs)
+
+
+================================================================================
+                         DEPENDENCIES ANALYSIS
+================================================================================
+
+requirements.txt contains:
+
+1. flask
+   └─ Web framework for routing and templating
+   └─ Version: Latest stable
+
+2. pymupdf (imported as fitz)
+   └─ High-performance PDF rendering and manipulation
+   └─ Used for: PDF → PNG conversion (convert_pdf_to_images)
+   └─ Features: Page extraction, pixmap rendering, metadata
+   └─ Performance: Very fast, C-based implementation
+   └─ Version: Latest
+
+3. pillow
+   └─ Python Imaging Library for image manipulation
+   └─ Note: Listed but NOT currently used in code
+   └─ Could be used for: Image overlay, resizing, composition
+   └─ Version: Latest
+
+MISSING DEPENDENCIES (used but not listed):
+
+1. PyPDF2
+   └─ Used in: watermark.py (PdfReader, PdfWriter)
+   └─ Purpose: Read original PDF, combine watermark overlay
+   └─ Status: REQUIRED, should be in requirements.txt
+
+2. reportlab
+   └─ Used in: watermark.py (canvas, Canvas, ImageReader)
+   └─ Purpose: Create in-memory PDF with watermark pattern
+   └─ Status: REQUIRED, should be in requirements.txt
+
+3. cairosvg
+   └─ Used in: watermark.py (cairosvg.svg2png)
+   └─ Purpose: Convert SVG logo to PNG bytes
+   └─ Status: REQUIRED, should be in requirements.txt
+   └─ Note: Requires system library: libcairo2
+
+CORRECTED REQUIREMENTS.TXT should be:
+┌─────────────────────
+│ flask
+│ pymupdf
+│ pillow
+│ PyPDF2
+│ reportlab
+│ cairosvg
+└─────────────────────
+
+
+================================================================================
+                    FRONTEND TEMPLATES BREAKDOWN
+================================================================================
+
+--- FILE: upload.html ---
+
+PURPOSE: Initial form for users to upload PDF and logo files
+
+SECTIONS:
+
+1. HEAD
+   ├─ Meta tags: UTF-8, viewport scaling
+   ├─ Title: "Medical PDF Processing"
+   └─ Bootstrap 5.3.2 CDN: Responsive styling
+
+2. STYLING
+   ├─ Background: Light blue (#f4f7fb)
+   ├─ Card: Centered, shadow, rounded corners
+   ├─ Upload zone: Dashed border, hover effect
+   └─ Max width: 540px (suitable for mobile + desktop)
+
+3. FORM FIELDS
+   ├─ Field 1: PDF file input
+   │  ├─ name="pdf"
+   │  ├─ accept=".pdf"
+   │  └─ required
+   │
+   └─ Field 2: Logo file input
+      ├─ name="logo"
+      ├─ accept=".svg,.png,.jpg,.jpeg"
+      ├─ required
+      └─ Note: Currently accepted but NOT USED by backend
+
+4. FORM VALIDATION (JavaScript)
+   ├─ On submit:
+   │  ├─ Check if PDF file exists
+   │  ├─ Check if filename ends with ".pdf"
+   │  ├─ Show error message if invalid
+   │  └─ Prevent form submission on validation failure
+   │
+   └─ Error display: Alert box with red background
+
+5. SUBMIT BUTTON
+   └─ POST to / (current route)
+   └─ Submits multipart/form-data
+
+ISSUES IDENTIFIED:
+
+Issue 1: Logo file ignored
+├─ Problem: User selects logo, but backend ignores it
+├─ Code: app.py uses hardcoded LOGO_SVG path
+├─ Impact: Users cannot customize watermark
+└─ Fix: Backend should accept and use uploaded logo
+
+Issue 2: Missing error handling
+├─ Problem: Large files or invalid PDFs cause silent failures
+├─ Impact: User sees progress bar stuck at 100%
+└─ Fix: Add try-catch, error messages, validation
+
+Issue 3: No file size limit on frontend
+├─ Problem: Users can upload very large files
+├─ Impact: Memory pressure on server
+└─ Fix: Add maxlength attribute to input
+
+
+--- FILE: progress.html ---
+
+PURPOSE: Display real-time progress bar while PDF processing occurs
+
+STRUCTURE:
+
+1. Progress Bar (HTML)
+   ├─ Container: 100% width, 1px border
+   ├─ Bar fill: Green background, left to right
+   ├─ Text: Percentage display (0-100%)
+   └─ Updates via JavaScript
+
+2. Progress Tracking (JavaScript)
+   ├─ Extract job_id from URL parameter: {{job_id}}
+   ├─ Set interval: Poll /status/{job_id} every 1000ms (1 second)
+   ├─ Fetch response: {progress: XX}
+   ├─ Update bar width and text
+   │
+   └─ Completion check:
+      ├─ IF progress >= 100%:
+      │  ├─ Clear interval (stop polling)
+      │  └─ Redirect to /result/{job_id}
+      └─ ELSE: Continue polling
+
+POLLING MECHANISM:
+
+fetch("/status/"+id)
+  ├─ GET request to Flask /status route
+  ├─ Response: JSON {progress: number}
+  └─ Interval: 1 second
+
+Timeline example (5-page PDF):
+├─ t=0s: Upload received, progress=5%
+├─ t=1s: Watermark applied, progress=30%
+├─ t=2s: Converting page 1/5, progress=44%
+├─ t=3s: Converting page 2/5, progress=58%
+├─ t=4s: Converting page 3/5, progress=72%
+├─ t=5s: Converting page 4/5, progress=86%
+├─ t=6s: Converting page 5/5, progress=100%
+├─ t=7s: Redirect to /result/{job_id}
+└─ Total time: ~6-7 seconds for typical PDF
+
+CHARACTERISTICS:
+├─ Minimalist design: Simple progress bar
+├─ Real-time feedback: User sees processing status
+├─ Auto-redirect: No manual page refresh needed
+└─ Blocking: Holds request thread (synchronous processing)
+
+
+--- FILE: result.html ---
+
+PURPOSE: Display all converted PDF pages as images
+
+STRUCTURE:
+
+1. Template Logic (Jinja2)
+   ├─ FOR each image in images list:
+   │  └─ <img src="/static/output/{job_id}/{image}">
+   │     ├─ Width: 300px
+   │     └─ Height: Auto-scale
+   │
+   └─ images = alphabetically sorted PNG filenames
+
+2. Image Display
+   ├─ Multiple images in vertical stack
+   ├─ Each image: page_1.png, page_2.png, etc.
+   ├─ Fixed width: 300px responsive
+   └─ No pagination or scrolling optimization
+
+CHARACTERISTICS:
+├─ Very simple template: Just image iteration
+├─ Responsive: Images scale on mobile
+├─ Sequential layout: One image per row
+└─ Static serving: Images from /static/output/
+
+
+================================================================================
+                     REQUEST-RESPONSE LIFECYCLE
+================================================================================
+
+SCENARIO: User uploads 3-page PDF
+
+┌─ Step 1: Display upload form
+│  GET / → Flask app.upload() → render_template("upload.html")
+│  ↓
+│  Browser displays upload form with PDF and logo inputs
+
+├─ Step 2: User submits PDF
+│  POST / (multipart/form-data) → Flask app.upload()
+│  │ 1. Generate job_id = "abc123..."
+│  │ 2. Create output dir: static/output/abc123/
+│  │ 3. Save PDF: uploads/abc123_original.pdf
+│  │ 4. progress_store[abc123] = 5
+│  │ 5. Call apply_watermark()
+│  │    └─ Create watermark from logo.svg
+│  │    └─ Merge with original PDF
+│  │    └─ Save: uploads/abc123_watermarked.pdf
+│  │ 6. progress_store[abc123] = 30
+│  │ 7. Call convert_pdf_to_images()
+│  │    Page 1: → static/output/abc123/page_1.png
+│  │            progress_store[abc123] = 40
+│  │    Page 2: → static/output/abc123/page_2.png
+│  │            progress_store[abc123] = 70
+│  │    Page 3: → static/output/abc123/page_3.png
+│  │            progress_store[abc123] = 100
+│  └─ Return HTTP 302 redirect to /progress/abc123
+
+├─ Step 3: Browser redirected to progress page
+│  GET /progress/abc123 → Flask app.progress_page() → render_template("progress.html")
+│  ↓
+│  Browser displays progress.html with progress bar at 0%
+
+├─ Step 4: JavaScript polling begins (every 1 second)
+│  JavaScript setInterval() starts:
+│  │
+│  │ @ t=0s: fetch /status/abc123 → {progress: 100}
+│  │         Bar shows 100%, redirect triggered immediately
+│  │
+│  │ OR (if still processing):
+│  │
+│  │ @ t=0s: fetch /status/abc123 → {progress: 30}
+│  │ @ t=1s: fetch /status/abc123 → {progress: 50}
+│  │ @ t=2s: fetch /status/abc123 → {progress: 80}
+│  │ @ t=3s: fetch /status/abc123 → {progress: 100}
+│  │ @ t=4s: clearInterval() called, redirect to /result/abc123
+
+├─ Step 5: Results page loaded
+│  GET /result/abc123 → Flask app.result()
+│  │ 1. List files in: static/output/abc123/
+│  │    Result: ['page_1.png', 'page_2.png', 'page_3.png']
+│  │ 2. Sort list (already sorted)
+│  │ 3. Pass to result.html template
+│  └─ Render HTML with 3 <img> tags
+
+└─ Step 6: User views result
+   Browser displays result.html showing 3 pages as images
+
+
+================================================================================
+                        PERFORMANCE ANALYSIS
+================================================================================
+
+PROCESSING TIME BREAKDOWN (estimated for 5-page PDF):
+
+Phase 1: Upload & Save
+├─ Multipart parsing: ~100-500ms (depends on file size)
+├─ Disk write: ~50-100ms (depends on disk speed)
+└─ Total: ~150-600ms
+
+Phase 2: Watermark Creation & Application
+├─ SVG → PNG conversion (cairosvg): ~500-1000ms
+├─ Create watermark PDF pattern: ~200-400ms
+├─ Merge watermark to each page (×5): ~800-1500ms
+└─ Total: ~1500-2900ms
+
+Phase 3: PDF → Image Conversion (200 DPI)
+├─ Per page: ~200-500ms (depends on page complexity)
+├─ For 5 pages: ~1000-2500ms
+├─ Disk write (×5): ~50-100ms per page
+└─ Total: ~1050-2600ms
+
+Total Processing Time: ~2700-6100ms = 3-6 seconds per 5-page PDF
+
+CPU Usage: CPU-BOUND
+├─ PDF rasterization (PyMUPDF): High CPU
+├─ SVG conversion (CairoSVG): High CPU
+├─ Watermark overlay (PyPDF2): Medium CPU
+└─ Mitigation: Should use background workers for large files
+
+Memory Usage: ~100-200MB
+├─ Original PDF in memory: Depends on complexity
+├─ Watermark PDF pattern: ~5-10MB
+├─ Raster images (×5): ~30-50MB per page @ 200 DPI
+└─ Mitigation: Page-by-page processing already implemented
+
+Disk Space:
+├─ Original PDF: Same as upload
+├─ Watermarked PDF: Same as original
+├─ PNGs (×5): ~50-100KB per page @ 200 DPI
+├─ Total per job: ~1.5-3× original PDF size
+└─ No cleanup: Old jobs remain on disk forever
+
+
+================================================================================
+                       SECURITY CONSIDERATIONS
+================================================================================
+
+VULNERABILITIES IDENTIFIED:
+
+1. NO FILE VALIDATION
+   ├─ Problem: No magic byte checking (could upload malicious files)
+   ├─ Frontend: Only checks .pdf extension (easily spoofed)
+   ├─ Backend: No validation of file content
+   ├─ Risk: PDF exploits, malware
+   └─ Fix: Use magic byte validation (first 4 bytes: %PDF)
+
+2. ARBITRARY FILE UPLOAD
+   ├─ Problem: No size limit enforced server-side
+   ├─ Risk: Disk exhaustion, DoS attacks
+   ├─ Current: 5-page PDF ~3MB, but could upload 1GB file
+   └─ Fix: Enforce max file size (e.g., 50MB)
+
+3. NO AUTHENTICATION/AUTHORIZATION
+   ├─ Problem: Any user can access any job by guessing job_id
+   ├─ Risk: Data leakage (viewing others' medical documents)
+   ├─ job_id: 36-character UUID (hard to guess, not impossible)
+   └─ Fix: Require login, associate jobs with user_id
+
+4. IN-MEMORY STATE LOSS
+   ├─ Problem: progress_store not persistent
+   ├─ Risk: Refresh page → progress lost, polling fails
+   ├─ Fix: Use database or Redis for progress tracking
+
+5. NO FILE CLEANUP
+   ├─ Problem: Original PDFs and images remain on disk
+   ├─ Risk: Disk exhaustion over time
+   ├─ Storage: uploads/ and static/output/ grow unbounded
+   └─ Fix: Implement cleanup job (delete files after 24h)
+
+6. SVG INJECTION
+   ├─ Problem: Logo file not validated
+   ├─ Risk: Malicious SVG could exploit rendering engine
+   ├─ Current: Hardcoded logo.svg, but frontend accepts uploads
+   └─ Fix: Validate SVG, use sandboxed rendering
+
+7. PATH TRAVERSAL
+   ├─ Problem: job_id from URL used in file paths
+   ├─ Risk: Could use "../" to access other jobs
+   ├─ Current: job_id is UUID, safe from traversal
+   └─ Status: OK
+
+8. INFORMATION DISCLOSURE
+   ├─ Problem: Error messages may leak server paths
+   ├─ Risk: Attacker learns directory structure
+   └─ Fix: Use generic error messages
+
+
+================================================================================
+                         CURRENT WORKFLOW
+================================================================================
+
+TYPICAL USE CASE: Hospital lab processing patient PDFs
+
+Step-by-step user experience:
+
+1. Lab technician opens web browser
+   └─ Navigates to http://medical-pdf-processor.hospital.local/
+
+2. Sees upload form with two fields:
+   ├─ "Medical PDF Document"
+   └─ "Official Logo (SVG / PNG / JPG)"
+   └─ Note: Logo field mandatory but not actually used
+
+3. Selects PDF file
+   ├─ Example: "Patient_Report_2024.pdf"
+   ├─ Browser validates extension: must be .pdf
+   └─ File selected
+
+4. Selects logo file
+   ├─ Example: "hospital_logo.svg"
+   ├─ Browser accepts any .svg, .png, .jpg, .jpeg
+   └─ File selected
+
+5. Clicks "Process Document" button
+   ├─ Form validates (must have PDF)
+   ├─ Multipart form-data sent to server
+   └─ HTTP connection waits...
+
+6. Server processes PDF
+   ├─ Watermark added (diagonal pattern)
+   ├─ Converted to images (one per page)
+   ├─ Files saved to disk
+   └─ Takes 3-6 seconds...
+
+7. Browser automatically redirected
+   ├─ URL becomes: /progress/{job_id}
+   └─ Displays progress bar
+
+8. Progress bar animates
+   ├─ JavaScript polls server every 1 second
+   ├─ Updates bar from 0% to 100%
+   ├─ Takes ~3-6 seconds for 5-page PDF
+   └─ At 100%, redirects automatically
+
+9. Results page displays
+   ├─ Shows all pages as images
+   ├─ Scrollable list of PNGs
+   ├─ User can view/print
+   └─ Can right-click to save individual pages
+
+10. No cleanup
+    ├─ Files remain on server disk
+    ├─ Another user could access via job_id if known
+    └─ Manual cleanup needed
+
+
+================================================================================
+                       BOTTLENECKS & ISSUES
+================================================================================
+
+1. SYNCHRONOUS PROCESSING
+   ├─ Problem: HTTP request blocked during entire processing
+   ├─ Impact: Web server worker unavailable for 3-6 seconds
+   ├─ Risk: Nginx timeout if processing exceeds proxy timeout
+   └─ Scenario: 10 concurrent uploads = 10 blocked workers
+   └─ Fix: Use Celery/RQ background tasks
+
+2. NO RETRY LOGIC
+   ├─ Problem: If watermarking fails, user sees blank progress
+   ├─ Impact: No error message, progress stuck at some %
+   ├─ Fix: Add try-catch, error handling, retry mechanism
+
+3. NO DATABASE
+   ├─ Problem: Progress stored in RAM, lost on app restart
+   ├─ Impact: Running jobs disappear, users see 404
+   └─ Fix: Use SQLite/PostgreSQL for persistence
+
+4. HARDCODED LOGO PATH
+   ├─ Problem: Cannot customize watermark per organization
+   ├─ Impact: Users upload logo but it's ignored
+   ├─ Fix: Use uploaded logo, validate before use
+
+5. NO RATE LIMITING
+   ├─ Problem: Anyone can flood server with uploads
+   ├─ Impact: DoS attack possible
+   └─ Fix: Implement per-IP or per-user rate limiting
+
+6. NO LOGGING
+   ├─ Problem: Cannot debug failures or investigate abuse
+   ├─ Impact: Black box application
+   └─ Fix: Add logging to all critical functions
+
+7. DISK SPACE UNLIMITED
+   ├─ Problem: No monitoring or quotas
+   ├─ Impact: Could fill disk silently
+   └─ Fix: Monitor free space, implement cleanup, set quotas
+
+8. SINGLE-THREADED LIMIT
+   ├─ Problem: Flask development server, production unsafe
+   ├─ Impact: Poor scalability
+   └─ Fix: Use Gunicorn/uWSGI with multiple workers
+
+
+================================================================================
+                    RECOMMENDED IMPROVEMENTS
+================================================================================
+
+PRIORITY 1 (Critical - Security & Stability):
+
+1. File validation
+   ├─ Check magic bytes (first 4 bytes: %PDF)
+   ├─ Limit file size (max 50MB)
+   ├─ Reject invalid PDFs with clear error
+   └─ Pseudocode:
+       ├─ if pdf.read(4) != b'%PDF': reject
+       ├─ if len(pdf) > 50 * 1024 * 1024: reject
+
+2. Error handling
+   ├─ Try-catch around all processing steps
+   ├─ User-friendly error messages
+   ├─ Log exceptions with full traceback
+   └─ Return JSON error response with HTTP 400/500
+
+3. File cleanup
+   ├─ Delete old jobs after 24 hours
+   ├─ Clean /uploads and /static/output directories
+   └─ Implement scheduled task (APScheduler or Celery Beat)
+
+PRIORITY 2 (Important - Functionality):
+
+4. Use uploaded logo
+   ├─ Accept logo from request, not hardcoded path
+   ├─ Store logo temporarily
+   ├─ Use in apply_watermark() call
+   └─ Validate SVG before use
+
+5. Progress persistence
+   ├─ Store progress in Redis or SQLite
+   ├─ Survives app restart
+   ├─ Access from multiple app instances
+   └─ Use: redis.set(f"job:{job_id}:progress", 50)
+
+6. Background processing
+   ├─ Use Celery + Redis
+   ├─ Upload endpoint enqueues job, returns immediately (202)
+   ├─ /status endpoint checks Redis key
+   ├─ Benefits: Eliminates Nginx timeout, scalable
+   └─ Time: Still 3-6s total, but not blocking web worker
+
+PRIORITY 3 (Nice to have):
+
+7. Database model
+   ├─ Store job_id, timestamp, status, file paths
+   ├─ Enable queries: list user's jobs, delete old jobs
+   └─ Schema: jobs(id, user_id, status, created_at, error)
+
+8. Authentication
+   ├─ Require login
+   ├─ Associate jobs with user_id
+   ├─ Prevent accessing others' documents
+   └─ Add login page, JWT/session tokens
+
+9. WebSocket updates
+   ├─ Real-time progress (instead of polling)
+   ├─ Lower latency, reduced server load
+   └─ Use: flask-socketio, socket.io on client
+
+10. Batch processing
+    ├─ Accept multiple PDFs at once
+    ├─ Merge results into single file
+    └─ Return zip archive
+
+
+================================================================================
+                        DEPLOYMENT NOTES
+================================================================================
+
+REQUIRED SYSTEM DEPENDENCIES:
+
+├─ Python 3.8+
+├─ pip (package manager)
+├─ System libraries for image processing:
+│  ├─ libcairo2 (for cairosvg)
+│  ├─ libpoppler (for PyMUPDF rendering)
+│  └─ On Debian/Ubuntu: apt-get install libcairo2 libpoppler-cpp0
+
+INSTALLATION:
+
+1. Create virtual environment
+   python -m venv venv
+
+2. Activate venv
+   source venv/bin/activate  # Linux/Mac
+   venv\Scripts\activate      # Windows
+
+3. Install dependencies (CORRECTED):
+   pip install flask pymupdf pillow PyPDF2 reportlab cairosvg
+
+4. Create required directories
+   mkdir -p uploads static/output
+
+5. Add logo.svg to project root
+   cp hospital_logo.svg logo.svg
+
+6. Run development server
+   python app.py
+   └─ Listens on http://localhost:5000
+
+PRODUCTION DEPLOYMENT:
+
+├─ DO NOT use Flask development server
+├─ Use Gunicorn + Nginx reverse proxy:
+│  ├─ gunicorn -w 4 app:app
+│  ├─ Nginx listens on :80
+│  ├─ Proxies to Gunicorn on :8000
+│  └─ Serves /static/ directly
+│
+├─ Add Redis for progress storage (instead of memory)
+├─ Add Celery for background jobs
+├─ Use PostgreSQL for persistence
+├─ Add SSL/TLS certificate (Let's Encrypt)
+└─ Monitor disk space, logs, resource usage
+
+
+================================================================================
+                          SUMMARY TABLE
+================================================================================
+
+Aspect              │ Current Status      │ Risk Level │ Fix Required?
+────────────────────┼─────────────────────┼────────────┼──────────────
+File validation     │ Extension only      │ HIGH       │ YES
+File size limit     │ None                │ HIGH       │ YES
+Error handling      │ None                │ HIGH       │ YES
+File cleanup        │ Manual              │ MEDIUM     │ YES
+Logo upload support │ Broken (ignored)    │ MEDIUM     │ YES
+Progress persist    │ Memory only         │ MEDIUM     │ YES
+Sync processing     │ Yes (blocking)      │ MEDIUM     │ YES
+Authentication      │ None                │ HIGH       │ YES
+Logging             │ None                │ MEDIUM     │ YES
+Rate limiting       │ None                │ MEDIUM     │ YES
+Disk monitoring     │ None                │ MEDIUM     │ YES
+Production ready    │ NO                  │ CRITICAL   │ YES
+
+
+================================================================================
+                           CONCLUSION
+================================================================================
+
+BOBI is a PROOF-OF-CONCEPT web application for PDF watermarking and conversion.
+It demonstrates core functionality but requires significant hardening before
+production use in a medical/healthcare setting.
+
+STRENGTHS:
+├─ Clean architecture with separated concerns
+├─ Working PDF watermarking with SVG support
+├─ Real-time progress tracking
+├─ Responsive UI
+└─ Easy to understand codebase
+
+WEAKNESSES:
+├─ No security controls (validation, auth, cleanup)
+├─ Synchronous processing (timeout risks)
+├─ Broken logo upload feature
+├─ No error handling
+├─ No persistence layer
+└─ Unfit for production without major refactoring
+
+RECOMMENDED ACTION:
+Before deploying to production:
+1. Implement file validation and size limits
+2. Add error handling and logging
+3. Move to async background processing (Celery)
+4. Fix logo upload feature
+5. Add authentication and file cleanup
+6. Test with realistic file sizes and concurrency
+7. Deploy behind Nginx with proper timeouts
+8. Monitor disk usage and set up alerts
+
+Estimated effort for production-ready: 40-60 hours of development
+
+================================================================================
+                         END OF DOCUMENTATION
+================================================================================

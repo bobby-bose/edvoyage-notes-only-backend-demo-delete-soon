@@ -210,56 +210,81 @@ class Flashcard(models.Model):
         if self.pdf_file and new_pdf:
             # Clear old images first (in case of update)
             self.images.all().delete()
-            self._process_pdf_to_images()
+            # Kick off BOBI processing (kept as synchronous call here so admin sees results)
+            self._process_pdf_with_bobi()
 
     
 
-    def _process_pdf_to_images(self):
-        pdf_path = self.pdf_file.path
+    def _process_pdf_with_bobi(self):
+        """
+        Delegate PDF processing to the external BOBI Flask service.
+        The Flask service is expected to return JSON with Base64-encoded images.
+        This method calls the helper in `notes.utils` which performs the HTTP
+        request and saves `FlashcardImage` records atomically.
+        """
+        from .utils import process_flashcard_pdf_with_bobi
+        import logging
 
-        reader = PdfReader(pdf_path)
-        total_pages = len(reader.pages)
+        logger = logging.getLogger(__name__)
 
-        temp_dir = tempfile.mkdtemp()
+        try:
+            process_flashcard_pdf_with_bobi(self)
+            logger.info(f"✓ Successfully processed flashcard {self.id} via BOBI")
 
-        for i in range(total_pages):
-            writer = PdfWriter()
-            writer.add_page(reader.pages[i])
-
-            single_pdf_path = os.path.join(temp_dir, f"page_{i+1}.pdf")
-
-            with open(single_pdf_path, "wb") as f:
-                writer.write(f)
-
-            watermarked_pdf_path = os.path.join(temp_dir, f"wm_page_{i+1}.pdf")
-
-            apply_watermark(
-                pdf_path=single_pdf_path,
-                svg_path="logo.svg",
-                output_path=watermarked_pdf_path
+        except Exception as e:
+            logger.error(f"✗ Failed to process PDF for flashcard {self.id}: {str(e)}")
+            from django.core.exceptions import ValidationError
+            raise ValidationError(
+                f"PDF processing failed: {str(e)}. Please check that BOBI service is running."
             )
 
-            if platform.system() == "Windows":
-                pages = convert_from_path(
-                    watermarked_pdf_path,
-                    poppler_path=r"C:\poppler\bin"
-                )
-            else:
-                pages = convert_from_path(watermarked_pdf_path)
 
-            img = pages[0]
+    # def _process_pdf_to_images(self):
+    #     pdf_path = self.pdf_file.path
 
-            image_io = io.BytesIO()
-            img.save(image_io, format="JPEG")
-            image_io.seek(0)
+    #     reader = PdfReader(pdf_path)
+    #     total_pages = len(reader.pages)
 
-            filename = f"{uuid4()}.jpg"
+    #     temp_dir = tempfile.mkdtemp()
 
-            FlashcardImage.objects.create(
-                flashcard=self,
-                image=File(image_io, name=filename),
-                caption=f"Page {i+1}"
-            )
+    #     for i in range(total_pages):
+    #         writer = PdfWriter()
+    #         writer.add_page(reader.pages[i])
+
+    #         single_pdf_path = os.path.join(temp_dir, f"page_{i+1}.pdf")
+
+    #         with open(single_pdf_path, "wb") as f:
+    #             writer.write(f)
+
+    #         watermarked_pdf_path = os.path.join(temp_dir, f"wm_page_{i+1}.pdf")
+
+    #         apply_watermark(
+    #             pdf_path=single_pdf_path,
+    #             svg_path="logo.svg",
+    #             output_path=watermarked_pdf_path
+    #         )
+
+    #         if platform.system() == "Windows":
+    #             pages = convert_from_path(
+    #                 watermarked_pdf_path,
+    #                 poppler_path=r"C:\poppler\bin"
+    #             )
+    #         else:
+    #             pages = convert_from_path(watermarked_pdf_path)
+
+    #         img = pages[0]
+
+    #         image_io = io.BytesIO()
+    #         img.save(image_io, format="JPEG")
+    #         image_io.seek(0)
+
+    #         filename = f"{uuid4()}.jpg"
+
+    #         FlashcardImage.objects.create(
+    #             flashcard=self,
+    #             image=File(image_io, name=filename),
+    #             caption=f"Page {i+1}"
+    #         )
 
 
 

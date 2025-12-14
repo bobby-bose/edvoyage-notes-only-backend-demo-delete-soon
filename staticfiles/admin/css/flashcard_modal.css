@@ -1,0 +1,74 @@
+/* Flashcard PDF Processing Modal */
+
+.pdf-processing-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 9999;
+    justify-content: center;
+    align-items: center;
+}
+
+.pdf-processing-overlay.active {
+    display: flex;
+}
+
+.pdf-processing-modal {
+    background: white;
+    padding: 40px;
+    border-radius: 12px;
+    text-align: center;
+    min-width: 400px;
+    max-width: 500px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    
+    /* Green double border: thin outer, thick inner */
+    border: 2px solid #16a34a;
+    box-shadow: inset 0 0 0 6px white, inset 0 0 0 8px #16a34a, 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.pdf-processing-modal h2 {
+    font-family: 'Times New Roman', Times, serif;
+    color: #1f2937;
+    font-size: 20px;
+    margin: 0 0 20px 0;
+    font-weight: 600;
+}
+
+.pdf-processing-modal p {
+    font-family: 'Times New Roman', Times, serif;
+    color: #4b5563;
+    font-size: 16px;
+    margin: 0 0 30px 0;
+    line-height: 1.6;
+}
+
+.pdf-spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid #e5e7eb;
+    border-top: 4px solid #16a34a;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 20px;
+}
+
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+.pdf-filename {
+    font-family: 'Times New Roman', Times, serif;
+    font-weight: bold;
+    color: #16a34a;
+    word-break: break-all;
+}

@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -140,3 +141,14 @@ REST_FRAMEWORK = {
 # Media files
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+# ============================================================
+# BOBI Flask Service Configuration
+# ============================================================
+# Configure the external BOBI PDF processing Flask service
+# Can be overridden via environment variables for different deployments
+
+BOBI_SERVICE_URL = 'http://localhost:5000'
+BOBI_REQUEST_TIMEOUT = 800
+BOBI_DPI = 200
+BOBI_FORMAT = 'png'
+BOBI_API_KEY = None
