@@ -1,0 +1,211 @@
+# Solution: Handling 50-100 MB PDFs on Limited Resources (1GB RAM, 0.1 CPU)
+
+## Problem
+- Current: Synchronous PDF processing blocks Django request
+- Large PDFs (50-100 MB) will timeout or crash on limited server
+- 1 GB RAM insufficient for processing + Django + OS
+- 0.1 CPU core = extremely slow processing
+
+## Solutions (In Order of Recommendation)
+
+### SOLUTION 1: Asynchronous Task Queue (RECOMMENDED) ⭐⭐⭐
+**Use Celery + Redis to process PDFs in background**
+
+#### How It Works:
+```
+User uploads PDF (50-100 MB) → Django saves file → Queue Celery task → Return immediately
+Modal shows "Processing..." and polls status endpoint
+Celery worker processes PDF asynchronously (separate process)
+When done, modal refreshes and shows images
+```
+
+#### Implementation:
+- Install: `pip install celery redis`
+- Create `notes/tasks.py` with `process_pdf_task()`
+- In `Flashcard.save()`: queue task instead of processing synchronously
+- Add status endpoint to check task progress
+- Update modal to poll status and auto-refresh when done
+
+#### Pros:
+✓ Non-blocking (request returns immediately)
+✓ Scales to multiple workers
+✓ Can retry failed tasks
+✓ Separate process won't crash Django
+
+#### Cons:
+✗ Requires Redis server (lightweight, ~10 MB RAM)
+✗ Slightly more complex
+
+#### Memory Usage:
+- Django: ~200 MB
+- Redis: ~10 MB
+- Celery worker: ~150 MB per worker
+- Total: ~360 MB (fits in 1 GB)
+
+---
+
+### SOLUTION 2: Reduce DPI + Compression (QUICK FIX)
+**Lower PDF conversion quality**
+
+#### Changes:
+```python
+# settings.py
+BOBI_DPI = 72        # Instead of 200 (web quality, much faster)
+BOBI_FORMAT = 'jpeg' # Instead of 'png' (smaller file size)
+# Reduce watermark opacity for faster rendering
+WATERMARK_OPACITY = 0.3  # Instead of 0.5
+```
+
+#### Effect:
+- 50-100 MB PDF → 5-10 MB output images
+- Processing time: 50% faster
+- Downside: Lower quality
+
+---
+
+### SOLUTION 3: Stream Processing (Advanced)
+**Process one page at a time, never load entire PDF in memory**
+
+#### How It Works:
+```python
+# Instead of: open PDF → extract all pages → create all images
+# Do: for each page: extract → convert → watermark → save → delete from memory
+```
+
+#### Code Change (in pdf_processing.py):
+```python
+def process_pdf_to_images(pdf_path):
+    doc = fitz.open(pdf_path)
+    
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        # Process ONE page at a time
+        img = render_page(page)
+        watermarked_img = apply_watermark_to_image(img)
+        save_to_disk(watermarked_img)
+        # Memory freed immediately
+        del img, watermarked_img
+    
+    doc.close()
+```
+
+#### Pros:
+✓ Memory usage stays constant (~100 MB)
+✓ Works on 1 GB RAM
+✓ Can handle 500 MB PDFs if needed
+
+#### Cons:
+✗ If one page fails, entire PDF processing stops
+✗ Must use database transactions carefully
+
+---
+
+### SOLUTION 4: Serverless / Offload to Cloud (SCALABLE)
+**Process PDFs on external service**
+
+#### Options:
+- AWS Lambda (pay per execution)
+- Google Cloud Functions
+- Azure Functions
+- Dedicated PDF service (e.g., Cloudinary)
+
+#### How It Works:
+```
+Django → Upload PDF to AWS S3 → Trigger Lambda → Lambda processes → Save images to S3 → Django downloads and stores
+```
+
+#### Pros:
+✓ Unlimited CPU/memory
+✓ Pay only for what you use
+✓ Automatic scaling
+
+#### Cons:
+✗ Requires cloud account (costs money)
+✗ Latency (network calls)
+✗ More complex integration
+
+---
+
+## Recommended Approach for Your Case
+
+### SHORT TERM (Immediate Fix):
+**Combine Solutions 1 + 2:**
+
+1. **Install Celery + Redis:**
+```bash
+pip install celery redis
+# Redis is lightweight, ~10 MB RAM
+```
+
+2. **Reduce DPI in settings.py:**
+```python
+BOBI_DPI = 100           # Faster processing
+BOBI_FORMAT = 'jpeg'     # Smaller files
+WATERMARK_OPACITY = 0.3  # Faster rendering
+```
+
+3. **Queue processing asynchronously:**
+- Move PDF processing to Celery task
+- Return response immediately
+- Modal polls status endpoint
+- Page auto-refreshes when done
+
+#### Memory footprint:
+- Django + Redis + Celery: ~360 MB (safe on 1 GB)
+- Processing a 100 MB PDF: Peak ~600 MB (acceptable)
+
+---
+
+### LONG TERM (Scale Up):
+- Upgrade server to 2 GB RAM (cheaper than cloud)
+- OR use AWS Lambda for PDF processing
+- OR run Celery workers on separate machine
+
+---
+
+## Implementation Priority
+
+**If you have <1 week:**
+1. Add Celery + Redis (asynchronous processing)
+2. Reduce DPI to 100
+3. Test with 100 MB PDF
+
+**If you have <1 day:**
+1. Just reduce DPI to 72 + format to JPEG
+2. Implement later
+
+**If you have <1 hour:**
+1. Change settings.py only:
+```python
+BOBI_DPI = 72
+BOBI_FORMAT = 'jpeg'
+WATERMARK_OPACITY = 0.25
+```
+
+---
+
+## Benchmarks (Estimated)
+
+| Scenario | DPI | Format | Time | RAM | Works on 1GB? |
+|----------|-----|--------|------|-----|---------------|
+| Current | 200 | PNG | 2-5 min | 800 MB | ❌ Risky |
+| Solution 2 Only | 100 | JPEG | 1-2 min | 500 MB | ✅ Yes |
+| Solution 1 + 2 | 100 | JPEG | 1-2 min | 360 MB max | ✅ Safe |
+| Stream Processing | 200 | PNG | 2-5 min | 300 MB max | ✅ Safe |
+
+---
+
+## Final Recommendation
+
+**Use Solution 1 (Celery) + Solution 2 (Reduce DPI):**
+
+- ✅ Non-blocking (request returns in <1 second)
+- ✅ Safe on 1 GB RAM
+- ✅ Handles 50-100 MB PDFs
+- ✅ User sees progress modal
+- ✅ Can scale to multiple workers later
+- ✅ Can retry failed tasks
+
+**Estimated setup time: 2-3 hours**
+
+Ready to implement Celery integration?

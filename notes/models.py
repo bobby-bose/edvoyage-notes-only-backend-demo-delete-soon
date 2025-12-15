@@ -1,30 +1,13 @@
+import os
+import io
+import tempfile
+from uuid import uuid4
+
 from django.db import models
 from django.utils import timezone
-from django.db import models
-import os
-from uuid import uuid4
 from django.core.files import File
-from pdf2image import convert_from_path
-import platform
-# models.py
-from django.db import models
-from django.core.files.base import ContentFile
-from PyPDF2 import PdfReader
-from pdf2image import convert_from_path  # install: pip install pdf2image
-import io, os
-from django.conf import settings
-from uuid import uuid4
-from .pdf_watermark import apply_watermark
-import tempfile
 
-from django.db import models
-from django.core.files import File
-from pdf2image import convert_from_path
-import io
-from uuid import uuid4
-# import PdfWriter
-from PyPDF2 import PdfWriter, PageObject
-
+from .pdf_processing import process_pdf_to_images
 
 class Category(models.Model):
     name = models.CharField(max_length=100, unique=True)
@@ -216,77 +199,70 @@ class Flashcard(models.Model):
     
 
     def _process_pdf_with_bobi(self):
-        """
-        Process PDF locally using Django's pdf_processing module.
-        Converts PDF pages to images, applies watermark, and creates FlashcardImage records.
-        Processing is synchronous so the modal shows real-time progress in admin.
-        """
-        from .pdf_processing import process_pdf_to_images, save_image_from_pil
-        from django.core.files.base import ContentFile
-        from django.db import transaction
-        from uuid import uuid4
-        import logging
+        if not self.pdf_file:
+            return
 
-        logger = logging.getLogger(__name__)
-
+        temp_dir = None
+        temp_pdf_path = None
+        
         try:
-            if not self.pdf_file:
-                raise ValueError("Flashcard has no PDF file")
+            # Create temp directory and file
+            temp_dir = tempfile.mkdtemp()
+            temp_pdf_path = os.path.join(temp_dir, f"temp_{self.id}.pdf")
+            
+            # Save PDF to temp file
+            with open(temp_pdf_path, 'wb+') as temp_pdf:
+                for chunk in self.pdf_file.chunks():
+                    temp_pdf.write(chunk)
+            
+            # Clear existing images
+            self.images.all().delete()
+            
+            # Process each page
+            for img, page_num in process_pdf_to_images(temp_pdf_path):
+                img_filename = f"flashcard_{self.id}_page_{page_num}.jpg"
+                
+                # Use context manager for buffer to ensure it's closed
+                with io.BytesIO() as buffer:
+                    img.save(
+                        buffer,
+                        format='JPEG',
+                        quality=85,
+                        optimize=True,
+                        progressive=True
+                    )
+                    buffer.seek(0)
+                    
+                    # Create and save FlashcardImage
+                    flashcard_image = FlashcardImage(
+                        flashcard=self,
+                        caption=f"Page {page_num}"
+                    )
+                    flashcard_image.image.save(
+                        img_filename,
+                        File(buffer),
+                        save=False
+                    )
+                    flashcard_image.save()
+                
+                # Explicitly clean up the image
+                del img
+    
+        finally:
+            # Clean up temp files
+            if temp_pdf_path and os.path.exists(temp_pdf_path):
+                try:
+                    os.unlink(temp_pdf_path)
+                except (PermissionError, OSError):
+                    pass
+            
+            # Clean up temp directory
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    os.rmdir(temp_dir)  # Only removes empty directory
+                except (OSError, PermissionError):
+                    pass
 
-            pdf_path = self.pdf_file.path
-            logger.info(f"[Flashcard {self.id}] Starting PDF processing: {pdf_path}")
-
-            # Process PDF and get list of (pil_image, page_num) tuples
-            images_data = process_pdf_to_images(pdf_path)
-            logger.info(f"[Flashcard {self.id}] PDF conversion complete: {len(images_data)} pages")
-
-            # Create FlashcardImage records atomically
-            with transaction.atomic():
-                for pil_image, page_num in images_data:
-                    try:
-                        # Get image format from settings
-                        from django.conf import settings
-                        img_format = getattr(settings, 'BOBI_FORMAT', 'png').lower()
-                        ext = 'png' if img_format == 'png' else 'jpg'
-
-                        # Convert PIL image to bytes
-                        image_bytes = save_image_from_pil(pil_image, img_format)
-
-                        # Create Django File object
-                        filename = f"{uuid4()}.{ext}"
-                        image_file = ContentFile(image_bytes, name=filename)
-
-                        # Create FlashcardImage record
-                        FlashcardImage.objects.create(
-                            flashcard=self,
-                            image=image_file,
-                            caption=f"Page {page_num}"
-                        )
-
-                        logger.info(f"[Flashcard {self.id}] Created image for page {page_num}")
-
-                    except Exception as e:
-                        logger.exception(f"[Flashcard {self.id}] Failed to create image for page {page_num}: {e}")
-                        raise
-
-            logger.info(f"✓ [Flashcard {self.id}] Successfully processed and saved {len(images_data)} images")
-
-        except FileNotFoundError as e:
-            logger.error(f"✗ [Flashcard {self.id}] PDF file not found: {str(e)}")
-            from django.core.exceptions import ValidationError
-            raise ValidationError(f"PDF file not found: {str(e)}")
-
-        except ValueError as e:
-            logger.error(f"✗ [Flashcard {self.id}] Invalid PDF: {str(e)}")
-            from django.core.exceptions import ValidationError
-            raise ValidationError(f"Invalid PDF: {str(e)}")
-
-        except Exception as e:
-            logger.exception(f"✗ [Flashcard {self.id}] PDF processing failed: {str(e)}")
-            from django.core.exceptions import ValidationError
-            raise ValidationError(
-                f"PDF processing failed: {str(e)}. Please ensure the PDF is valid."
-            )
 
 
     # def _process_pdf_to_images(self):

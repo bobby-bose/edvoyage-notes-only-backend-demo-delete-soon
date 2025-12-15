@@ -146,83 +146,77 @@ def apply_watermark_to_image(
 def process_pdf_to_images(pdf_path, dpi=None, image_format=None):
     """
     Convert PDF pages to images with watermark.
+    Processes one page at a time to minimize memory usage.
     
     Args:
         pdf_path: Path to PDF file
         dpi: Dots per inch (resolution). Uses BOBI_DPI if None
         image_format: Output format ('png' or 'jpeg'). Uses BOBI_FORMAT if None
     
-    Returns:
-        List of tuples: [(pil_image, page_num), ...]
+    Yields:
+        Tuples of (PIL.Image, page_num) for each page
     
     Raises:
         FileNotFoundError: PDF doesn't exist
         ValueError: PDF invalid or empty
         Exception: Processing error
     """
-    if dpi is None:
-        dpi = getattr(settings, 'BOBI_DPI', 200)
-    if image_format is None:
-        image_format = getattr(settings, 'BOBI_FORMAT', 'png').lower()
-
-    logger.info(f"[PDF] Processing PDF: {pdf_path}, dpi={dpi}, format={image_format}")
-
-    # Validate file exists
     if not os.path.exists(pdf_path):
-        logger.error(f"[PDF] File not found: {pdf_path}")
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
+    # Use Django settings as defaults
+    dpi = dpi or getattr(settings, 'BOBI_DPI', 300)
+    image_format = image_format or getattr(settings, 'BOBI_FORMAT', 'png')
+
+    doc = None
     try:
-        # Open PDF
-        logger.debug(f"[PDF] Opening PDF: {pdf_path}")
+        # Open the PDF
         doc = fitz.open(pdf_path)
-        total_pages = len(doc)
-        logger.info(f"[PDF] PDF has {total_pages} pages")
+        if doc.page_count == 0:
+            raise ValueError("PDF is empty")
 
-        if total_pages == 0:
-            doc.close()
-            raise ValueError("PDF has no pages")
+        logger.info(f"[PDF] Processing {doc.page_count} pages from {os.path.basename(pdf_path)}")
 
-        # Process each page
-        images = []
-        for page_num in range(total_pages):
+        # Process each page one at a time
+        for page_num in range(doc.page_count):
             try:
-                logger.debug(f"[PDF] Processing page {page_num + 1}/{total_pages}")
+                # Load and process one page at a time
+                page = doc.load_page(page_num)
                 
-                page = doc[page_num]
+                # Render page to an image
+                pix = page.get_pixmap(dpi=dpi)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                logger.debug(f"[PDF] Rendered page {page_num + 1}: {img.size[0]}x{img.size[1]} pixels")
                 
-                # Render page to image at specified DPI
-                zoom = dpi / 72.0
-                mat = fitz.Matrix(zoom, zoom)
-                pix = page.get_pixmap(matrix=mat)
+                # Apply watermark with original settings
+                img = apply_watermark_to_image(img)
                 
-                # Convert to PIL Image
-                img_data = pix.tobytes("ppm")
-                img = Image.open(io.BytesIO(img_data))
-                img = img.convert("RGB")
+                # Yield the result immediately
+                yield (img, page_num + 1)
                 
-                logger.debug(f"[PDF] Page {page_num + 1} rendered: ({img.width}x{img.height})")
+                # Clean up explicitly
+                del img
+                del pix
+                del page
                 
-                # Apply watermark
-                watermarked_img = apply_watermark_to_image(img)
+                # Force garbage collection every 5 pages
+                if (page_num + 1) % 5 == 0:
+                    import gc
+                    gc.collect()
                 
-                # Store result
-                images.append((watermarked_img, page_num + 1))
-                logger.info(f"[PDF] Page {page_num + 1} processed successfully")
-
             except Exception as e:
-                logger.exception(f"[PDF] Error processing page {page_num + 1}: {e}")
-                doc.close()
-                raise
-
-        doc.close()
-        logger.info(f"[PDF] Successfully processed {len(images)} pages")
-        
-        return images
-
+                logger.error(f"[PDF] Error processing page {page_num + 1}: {str(e)}")
+                # Continue with next page even if one fails
+                continue
+                
     except Exception as e:
-        logger.exception(f"[PDF] PDF processing failed: {e}")
+        logger.error(f"[PDF] PDF processing failed: {str(e)}")
         raise
+        
+    finally:
+        if doc:
+            doc.close()
+            logger.debug("[PDF] Closed PDF document")
 
 
 def save_image_from_pil(pil_image, output_format='png'):
